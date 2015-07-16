@@ -1270,7 +1270,8 @@ module plat.observable {
          */
         protected _overwriteArrayFunction(absoluteIdentifier: string, method: string): (...args: any[]) => any {
             let callbackObjects = ContextManager.arrayChangeListeners[absoluteIdentifier] || {},
-                _this = this;
+                self = this,
+                changes: Array<IArrayChanges<any>> = [];
 
             // we can't use a fat-arrow function here because we need the array context.
             return function observedArrayFn(...args: any[]): any {
@@ -1285,14 +1286,12 @@ module plat.observable {
                     oldArray: Array<any>,
                     addedCount: number,
                     index: number,
-                    newLength: number,
                     removed: Array<any>;
 
                 if (selfNotify) {
-                    _this.__isArrayFunction = true;
+                    self.__isArrayFunction = true;
                     returnValue = (<any>Array.prototype)[method].apply(this, args);
-                    _this.__isArrayFunction = false;
-                    newLength = this.length;
+                    self.__isArrayFunction = false;
 
                     index = 0;
                     if (isShift) {
@@ -1308,7 +1307,6 @@ module plat.observable {
                     }
                 } else {
                     returnValue = (<any>Array.prototype)[method].apply(this, args);
-                    newLength = this.length;
 
                     if (isUpdate) {
                         oldArray = originalArray;
@@ -1318,7 +1316,7 @@ module plat.observable {
                         removed = [];
                     } else if (method === 'pop') {
                         addedCount = 0;
-                        index = newLength;
+                        index = this.length;
                         removed = oldLength > 0 ? [returnValue] : [];
                     }
                 }
@@ -1327,34 +1325,44 @@ module plat.observable {
                     ContextManager.unObserve(returnValue);
                 }
 
-                let keys = Object.keys(callbackObjects),
-                    length = keys.length,
-                    callbacks: Array<(changes: Array<IArrayChanges<any>>) => void>,
-                    jLength: number,
-                    i: number,
-                    j: number;
+                changes.push({
+                    object: this,
+                    type: method,
+                    index: index,
+                    removed: removed,
+                    addedCount: addedCount,
+                    oldArray: oldArray
+                });
 
-                for (i = 0; i < length; ++i) {
-                    callbacks = callbackObjects[keys[i]];
-                    jLength = callbacks.length;
+                if (changes.length > 1) {
+                    return returnValue;
+                }
 
-                    for (j = 0; j < jLength; ++j) {
-                        callbacks[j]([{
-                            object: this,
-                            type: method,
-                            index: index,
-                            removed: removed,
-                            addedCount: addedCount,
-                            oldArray: oldArray
-                        }]);
+                postpone(() => {
+                    let keys = Object.keys(callbackObjects),
+                        length = keys.length,
+                        callbacks: Array<(changes: Array<IArrayChanges<any>>) => void>,
+                        jLength: number,
+                        i: number,
+                        j: number;
+
+                    for (i = 0; i < length; ++i) {
+                        callbacks = callbackObjects[keys[i]];
+                        jLength = callbacks.length;
+
+                        for (j = 0; j < jLength; ++j) {
+                            callbacks[j](changes);
+                        }
                     }
-                }
 
-                if (selfNotify) {
-                    _this._notifyChildProperties(absoluteIdentifier, this, originalArray);
-                }
+                    changes = [];
 
-                _this._execute(absoluteIdentifier + '.length', newLength, oldLength);
+                    if (selfNotify) {
+                        self._notifyChildProperties(absoluteIdentifier, this, originalArray);
+                    }
+
+                    self._execute(absoluteIdentifier + '.length', this.length, oldLength);
+                });
 
                 return returnValue;
             };
@@ -1466,7 +1474,8 @@ module plat.observable {
          * @returns {void}
          */
         private __defineObject(identifier: string, immediateContext: any, key: string): void {
-            let value = immediateContext[key];
+            let value = immediateContext[key],
+                clearTimeout: IRemoveListener = noop;
 
             Object.defineProperty(immediateContext, key, {
                 configurable: true,
@@ -1487,29 +1496,32 @@ module plat.observable {
                         return;
                     }
 
-                    ContextManager.unObserve(oldValue);
+                    clearTimeout();
+                    clearTimeout = postpone(() => {
+                        ContextManager.unObserve(oldValue);
 
-                    let props = this.__identifierHash[identifier],
-                        childPropertiesExist = false,
-                        mappings: Array<string>;
+                        let props = this.__identifierHash[identifier],
+                            childPropertiesExist = false,
+                            mappings: Array<string>;
 
-                    if (isObject(props)) {
-                        mappings = Object.keys(props);
-                        childPropertiesExist = mappings.length > 0;
-                    }
+                        if (isObject(props)) {
+                            mappings = Object.keys(props);
+                            childPropertiesExist = mappings.length > 0;
+                        }
 
-                    this._execute(identifier, value, oldValue);
+                        this._execute(identifier, value, oldValue);
 
-                    if (childPropertiesExist) {
-                        this._notifyChildProperties(identifier, value, oldValue, mappings);
-                        if (!isObject(value)) {
+                        if (childPropertiesExist) {
+                            this._notifyChildProperties(identifier, value, oldValue, mappings);
+                            if (!isObject(value)) {
+                                this.__definePrimitive(identifier, immediateContext, key);
+                            }
+                        } else if (isEmpty(this.__identifiers[identifier])) {
+                            ContextManager.defineProperty(immediateContext, key, value, true, true, true);
+                        } else if (!isObject(value)) {
                             this.__definePrimitive(identifier, immediateContext, key);
                         }
-                    } else if (isEmpty(this.__identifiers[identifier])) {
-                        ContextManager.defineProperty(immediateContext, key, value, true, true, true);
-                    } else if (!isObject(value)) {
-                        this.__definePrimitive(identifier, immediateContext, key);
-                    }
+                    });
                 }
             });
         }
@@ -1531,7 +1543,8 @@ module plat.observable {
          */
         private __definePrimitive(identifier: string, immediateContext: any, key: string): void {
             let value = immediateContext[key],
-                isDefined = !isNull(value);
+                isDefined = !isNull(value),
+                clearTimeout: IRemoveListener = noop;
 
             if (isArray(immediateContext) && key === 'length') {
                 return;
@@ -1548,6 +1561,7 @@ module plat.observable {
                     if (value === newValue) {
                         return;
                     }
+
                     let oldValue = value;
                     value = newValue;
 
@@ -1555,28 +1569,31 @@ module plat.observable {
                         return;
                     }
 
-                    let props = this.__identifierHash[identifier],
-                        childPropertiesExist = false,
-                        mappings: Array<string>;
+                    clearTimeout();
+                    clearTimeout = postpone(() => {
+                        let props = this.__identifierHash[identifier],
+                            childPropertiesExist = false,
+                            mappings: Array<string>;
 
-                    if (isObject(props)) {
-                        mappings = Object.keys(props);
-                        childPropertiesExist = mappings.length > 0;
-                    }
-
-                    this._execute(identifier, newValue, oldValue);
-
-                    if (!childPropertiesExist && isEmpty(this.__identifiers[identifier])) {
-                        ContextManager.defineProperty(immediateContext, key, value, true, true, true);
-                    } else if (isObject(value)) {
-                        this.__defineObject(identifier, immediateContext, key);
-                        if (childPropertiesExist) {
-                            this._notifyChildProperties(identifier, newValue, oldValue, mappings);
+                        if (isObject(props)) {
+                            mappings = Object.keys(props);
+                            childPropertiesExist = mappings.length > 0;
                         }
-                    } else if (!isDefined) {
-                        this.__definePrimitive(identifier, immediateContext, key);
-                        isDefined = true;
-                    }
+
+                        this._execute(identifier, newValue, oldValue);
+
+                        if (!childPropertiesExist && isEmpty(this.__identifiers[identifier])) {
+                            ContextManager.defineProperty(immediateContext, key, value, true, true, true);
+                        } else if (isObject(value)) {
+                            this.__defineObject(identifier, immediateContext, key);
+                            if (childPropertiesExist) {
+                                this._notifyChildProperties(identifier, newValue, oldValue, mappings);
+                            }
+                        } else if (!isDefined) {
+                            this.__definePrimitive(identifier, immediateContext, key);
+                            isDefined = true;
+                        }
+                    });
                 }
             });
         }
