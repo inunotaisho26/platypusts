@@ -1475,7 +1475,7 @@ module plat.observable {
          */
         private __defineObject(identifier: string, immediateContext: any, key: string): void {
             let value = immediateContext[key],
-                clearTimeout: IRemoveListener = noop;
+                changed: boolean = false;
 
             Object.defineProperty(immediateContext, key, {
                 configurable: true,
@@ -1489,17 +1489,24 @@ module plat.observable {
                         return;
                     }
 
-                    let oldValue = value;
+                    let tempValue = value;
                     value = newValue;
 
                     if (this.__isArrayFunction) {
                         return;
                     }
 
-                    clearTimeout();
-                    clearTimeout = postpone(() => {
-                        ContextManager.unObserve(oldValue);
+                    ContextManager.unObserve(tempValue);
 
+                    if(changed) {
+                        return;
+                    }
+
+                    let oldValue = tempValue;
+                    changed = true;
+
+                    postpone(() => {
+                        changed = false;
                         let props = this.__identifierHash[identifier],
                             childPropertiesExist = false,
                             mappings: Array<string>;
@@ -1544,7 +1551,7 @@ module plat.observable {
         private __definePrimitive(identifier: string, immediateContext: any, key: string): void {
             let value = immediateContext[key],
                 isDefined = !isNull(value),
-                clearTimeout: IRemoveListener = noop;
+                changed: boolean = false;
 
             if (isArray(immediateContext) && key === 'length') {
                 return;
@@ -1562,15 +1569,22 @@ module plat.observable {
                         return;
                     }
 
-                    let oldValue = value;
+                    let tempValue = value;
                     value = newValue;
 
                     if (this.__isArrayFunction && isArray(immediateContext)) {
                         return;
                     }
 
-                    clearTimeout();
-                    clearTimeout = postpone(() => {
+                    if(changed) {
+                        return;
+                    }
+
+                    let oldValue = tempValue;
+                    changed = true;
+
+                    postpone(() => {
+                        changed = false;
                         let props = this.__identifierHash[identifier],
                             childPropertiesExist = false,
                             mappings: Array<string>;
